@@ -1,0 +1,16 @@
+Bootstrap: docker
+From: nvcr.io/nvidia/pytorch:25.10-py3
+
+# Rebuilds the run image with the package versions of pytorch_al_img.sif:
+#   apptainer build al.sif al.def
+# Run from the container/ directory so requirements.txt is found.
+
+%files
+    requirements.txt /opt/requirements.txt
+
+%post
+    set -eux
+    pip install --no-cache-dir --root-user-action=ignore -r /opt/requirements.txt
+
+%environment
+    export PATH="/usr/bin:$PATH"

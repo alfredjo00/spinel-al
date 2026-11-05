@@ -1,0 +1,23 @@
+# Versions installed in the image used for the runs (pytorch_al_img.sif, built 2026-07-04).
+# The full lock is pip_freeze_pytorch_al_img.txt. torch comes from the base image
+# (nvcr.io/nvidia/pytorch:25.10-py3: Python 3.12.3, torch 2.9.0a0, CUDA 13.0).
+ase==3.29.0
+chgnet==0.4.2
+flatten-dict==0.5.0
+gpytorch==1.15.2
+hdbscan==0.8.44
+icet==3.2
+matplotlib==3.10.7
+mp-api==0.46.4
+numpy==2.1.0
+pandas==3.0.3
+phonopy==4.3.1
+plotly==6.8.0
+psutil==7.1.0
+pymatgen==2026.5.4
+PyYAML==6.0.3
+scikit-learn==1.7.2
+scipy==1.16.2
+seaborn==0.13.2
+spglib==2.7.0
+umap-learn==0.5.12
