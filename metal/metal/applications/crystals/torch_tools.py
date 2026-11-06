@@ -30,10 +30,7 @@ def get_torch_device(
     Parameters
     ----------
     potential
-        a potential chosen from 'CHGNet', 'M3GNet' and 'MatGL'. Note that the
-        latter corresponds to the M3GNet implemenation in the Materials Graph
-        Library (MatGL), which is based on pytorch rather than tensorflow.
-        Defaults to 'CHGNet'.
+        the machine-learned interatomic potential, 'CHGNet'
     gpu_id
         GPU id, selected automatically if negative number
     threads_per_process
@@ -41,14 +38,8 @@ def get_torch_device(
         set equal to the environment variable `OMP_NUM_THREADS`, if available,
         otherwise, this will be handled by the MLP. In the latter case,
         multiple processes will typically compete for all available threads.
-        Since this is not an issue when using Tensorflow `threads_per_process`
-        is ignored when using GPUs, or the M3GNet potential.
+        `threads_per_process` is ignored when using GPUs.
     """
-    if potential.lower() == 'm3gnet':
-
-        raise Exception('Other functionalities should be used for setting the'
-                        ' device when using M3GNet')
-
     if gpu_id is not None:
 
         if potential.lower() == 'chgnet' and torch.backends.mps.is_available():

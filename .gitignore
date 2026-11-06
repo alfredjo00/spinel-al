@@ -9,3 +9,7 @@ __pycache__/
 /oxygen-carrier-discovery/heoc/spinel_*/
 /.cache/
 *.sif
+# Outputs of the analysis scripts (the article's versions are in the Zenodo record)
+/analysis/derived_data/
+/analysis/tables/
+/analysis/figures/

@@ -1,15 +1,16 @@
-"""Recreate the directory layout of the runs that the analysis scripts read.
+"""Link the Zenodo data into the directory layout of the runs.
 
-The scripts read heoc/spinel_rev_<arm>_s<seed>/training.db, the run record in
-heoc/spinel_rev_<arm>_s<seed>/<timestamp>/ and the candidates in cycle<N>/, where
-<arm> is the arm code of the README. Unzip training_databases.zip, run_records.zip,
-analysis.zip and, optionally, the structures archives into one directory, then run
+The analysis scripts and the active learning code read the runs from
+oxygen-carrier-discovery/heoc/spinel_rev_<arm>_s<seed>/: training.db, the run record in
+<timestamp>/ and the candidates and structures in cycle<N>/, where <arm> is the arm code
+of the README. Unzip training_databases.zip, run_records.zip and, optionally,
+initial_dataset.zip and the structures archives into data/, then run
 
     python3 analysis/scripts/restore_original_layout.py
 
-from that directory. This creates symbolic links in heoc/ only. Optional arguments
-give the unzipped directory and the target, which then has to be passed to the
-scripts through the environment variable HEOC.
+from the repository root. This creates symbolic links only. Optional arguments give the
+data directory and the target, which then has to be passed to the scripts through the
+environment variable HEOC.
 """
 import json
 import sys
@@ -40,6 +41,9 @@ def main(src, dst):
     src, dst = Path(src), Path(dst)
     link(src / 'training_databases/initial_and_random_reference.db',
          dst / 'spinel_Li_random/training.db')
+    # the initial dataset alone, read by the held-out test
+    if (src / 'initial_dataset/training.db').exists():
+        link(src / 'initial_dataset/training.db', dst / 'spinel_base_rev/training.db')
     for name, arm in ARM.items():
         for run in range(1, 6):
             origin = json.loads((src / f'run_records/{name}/run{run}/origin.json').read_text())
@@ -60,6 +64,7 @@ def main(src, dst):
 
 
 if __name__ == '__main__':
-    top = Path(__file__).resolve().parents[2]
-    source = Path(sys.argv[1]) if len(sys.argv) > 1 else top
-    main(source, Path(sys.argv[2]) if len(sys.argv) > 2 else source / 'heoc')
+    repo = Path(__file__).resolve().parents[2]
+    source = Path(sys.argv[1]) if len(sys.argv) > 1 else repo / 'data'
+    target = Path(sys.argv[2]) if len(sys.argv) > 2 else repo / 'oxygen-carrier-discovery' / 'heoc'
+    main(source, target)

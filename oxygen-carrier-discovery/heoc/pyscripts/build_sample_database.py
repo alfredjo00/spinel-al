@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Build <directory>/cycle<N>/sample.db from the selected compositions in cycle<N>/sample.csv.
+
+Each composition is placed on the 84-atom spinel supercell by a random decoration of
+the sublattices, and its stability factors, entropy, abundance and price are stored.
+N is the highest-numbered cycle directory.
+"""
 
 import argparse
 from ase.data import chemical_symbols
@@ -17,30 +23,22 @@ from build_training_database import get_stability_factors
 
 
 def build_sample_database(directory='spinel', random_seed=None):
-    '''Create a database with training structures by randomly populating 80
-    atom perovskite supercells with various elements based on the
-    concentrations in the sample text file found in the latest cycle folder
+    '''Create a database of structures by randomly populating the 84-atom
+    spinel supercell according to the compositions in the sample text file of
+    the latest cycle folder
 
     Parameters
     ----------
     directory
-        data directory
+        run directory, relative to heoc/
+    random_seed
+        seed for the random decoration of the sublattices
     '''
 
-    # Try to read crystal space, otherwise change path
-    # Based on relative path of this script
-    try:
-        crystal_space = CrystalSpace.read(f'{directory}/crystal_space.spa')
-    except:
-        try:
-            # Add crystal space based on relative location of this script
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            parent_dir = os.path.dirname(script_dir)
-            spa_file_path = os.path.join(parent_dir, f'{directory}/crystal_space.spa')
-            
-            crystal_space = CrystalSpace.read(spa_file_path)
-        except:
-            print("Path to crystal_space.spa incorrect")    
+    # paths are relative to heoc/, the parent of this script's folder
+    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    crystal_space = CrystalSpace.read(
+        os.path.join(parent_dir, directory, 'crystal_space.spa'))
 
     # read concentrations
     cycle = sorted([int(os.path.basename(folder).replace('cycle', ''))
@@ -79,13 +77,12 @@ if __name__ == '__main__':
     parser.add_argument('--directory',
                         type=str,
                         default='spinel',
-                        choices=['spinel','wang', 'inaki'],
-                        help='data directory')
+                        help='run directory')
+    parser.add_argument('--random-seed', type=int, default=None,
+                        help='seed of the sublattice decoration; the active learning '
+                             'loop passes the run seed')
     args = parser.parse_args()
 
-    # Create a database with training structures by randomly populating 80 atom
-    # perovskite supercells with various elements based on the concentrations
-    # in the sample text file found in the latest cycle folder
-    build_sample_database(directory=args.directory)
+    build_sample_database(directory=args.directory, random_seed=args.random_seed)
 
     os.chdir(cwd)

@@ -3,26 +3,29 @@
 #
 #   ./run_arm.sh <arm> <seed> [cycles]
 #
-# arm     de, de_clip, de_land, dde, gp, gp_clip, mogp, dgp, mc, mc_clip
+# arm     de, de_clip, de_land, dde, gp, gp_clip, mogp, dgp, mc, mc_clip, or ceil
+#         (the ceiling-only reference)
 # seed    1-5 reproduce runs 1-5 of the article
 # cycles  acquisition cycles, default 20 as in the article
 #
 # Environment variables:
 #   AL_RUNNER               apptainer (default) or docker
-#   AL_IMAGE                Apptainer image, default container/pytorch_al_img.sif,
+#   AL_IMAGE                Apptainer image, default container/pytorch_al_img.sif
+#                           (from the Zenodo record),
 #                           or Docker image tag, default spinel-al
 #   AL_STOP_AFTER_SAMPLING  if set, stop after the candidates of the first cycle
 #                           are selected (no CHGNet/Phonopy, no Materials Project)
 #   PMG_MAPI_KEY            Materials Project API key, needed for a full cycle
 #
-# The run directory is code/oxygen-carrier-discovery/heoc/spinel_rev_<arm>_s<seed>/. Running
-# the same command again resumes an interrupted run.
+# The run directory is oxygen-carrier-discovery/heoc/spinel_rev_<arm>_s<seed>/. Running the
+# same command again resumes an interrupted run. The initial dataset is read from
+# data/initial_dataset/ (initial_dataset.zip of the Zenodo record).
 set -euo pipefail
 
 arm=${1:?arm}; seed=${2:?seed}; cycles=${3:-20}
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-code=$here/code
-heoc=$code/oxygen-carrier-discovery/heoc
+heoc=$here/oxygen-carrier-discovery/heoc
+init=$here/data/initial_dataset
 
 # Shared settings of all arms (Methods and SI). --cycles counts cycle 0.
 common="--cycles $((cycles + 1)) -b 3 -t 10 --n-samples-total 25000
@@ -41,15 +44,20 @@ case $arm in
     dgp)     flags="--model delta_gp --ensemble-size 16 --delta-gp-iters 1000 --delta-gp-patience 100 --predict-landscape --quadratic-fit-landscape-otc" ;;
     mc)      flags="--model mc" ;;
     mc_clip) flags="--model mc --clip-otc-physical" ;;
+    ceil)    flags="--model ceiling" ;;
     *) echo "unknown arm: $arm" >&2; exit 1 ;;
 esac
 
 method=spinel_rev_${arm}_s${seed}
+if [ ! -f "$init/training.db" ]; then
+    echo "initial dataset not found: unzip initial_dataset.zip of the Zenodo record into data/" >&2
+    exit 1
+fi
 if [ ! -e "$heoc/$method" ]; then
     # cycle0/ marks the initial dataset as evaluated. Without it the pipeline
     # treats the run as cycle 0 and builds SQS structures for all of training.db.
     mkdir -p "$heoc/$method/cycle0"
-    cp "$here"/data/initial_dataset/{training.db,crystal_space.spa,prototypes.db} "$heoc/$method/"
+    cp "$init"/{training.db,crystal_space.spa,prototypes.db} "$heoc/$method/"
 fi
 
 cmd="python -u active_learning_HEO.py --method $method --auto-resume --seed $seed $flags $common"
@@ -58,12 +66,12 @@ envs=(AL_STOP_AFTER_SAMPLING="${AL_STOP_AFTER_SAMPLING:-}" PMG_MAPI_KEY="${PMG_M
 case ${AL_RUNNER:-apptainer} in
     apptainer)
         env "${envs[@]/#/APPTAINERENV_}" \
-            apptainer exec --nv --bind "$here" --pwd "$code/active-learning/src" \
+            apptainer exec --nv --bind "$here" --pwd "$here/active-learning/src" \
             "${AL_IMAGE:-$here/container/pytorch_al_img.sif}" $cmd ;;
     docker)
         docker run --rm --gpus all --user "$(id -u):$(id -g)" \
             -e HOME=/tmp -e "${envs[0]}" -e "${envs[1]}" \
-            -v "$here:$here" -w "$code/active-learning/src" \
+            -v "$here:$here" -w "$here/active-learning/src" \
             "${AL_IMAGE:-spinel-al}" $cmd ;;
     *) echo "AL_RUNNER must be apptainer or docker" >&2; exit 1 ;;
 esac

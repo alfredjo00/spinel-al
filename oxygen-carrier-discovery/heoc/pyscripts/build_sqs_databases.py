@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Build the SQS databases <directory>/cycle<N>/sqs_<formula>.db.
+
+For each composition, a special quasirandom structure (SQS) of the 84-atom spinel
+supercell is generated at each of 0 to 7 oxygen vacancies. Compositions come from
+cycle<N>/sample.db of the highest-numbered cycle, or from training.db if only cycle0
+exists.
+"""
 
 from ase.db import connect
 import argparse
@@ -14,51 +21,6 @@ from metal.applications.crystals.cluster_expansion import\
     build_sqs_db
 from metal.applications.crystals.tools import (get_rows_db, get_sublattice_map,
                                                _atoms_row_to_structure)
-
-
-def get_cubic_tag(atoms_row):
-    '''Generate tag by adding ``_cubic`` to the chemical formula
-
-    Parameters
-    ----------
-    atoms_row
-        ASE Atoms or AtomsRow object
-    '''
-
-    # check atoms/row
-    structure = _atoms_row_to_structure(atoms_row)
-
-    return f'{structure.get_chemical_formula()}_cubic'
-
-
-def get_orthorhombic_tag(atoms_row):
-    '''Generate tag by adding ``_orthorhombic`` to the chemical formula
-
-    Parameters
-    ----------
-    atoms_row
-        ASE Atoms or AtomsRow object
-    '''
-
-    # check atoms/row
-    structure = _atoms_row_to_structure(atoms_row)
-
-    return f'{structure.get_chemical_formula()}_orthorhombic'
-
-
-def get_brownmillerite_tag(atoms_row):
-    '''Generate tag by adding ``_brownmillerite`` to the chemical formula
-
-    Parameters
-    ----------
-    atoms_row
-        ASE Atoms or AtomsRow object
-    '''
-
-    # check atoms/row
-    structure = _atoms_row_to_structure(atoms_row)
-
-    return f'{structure.get_chemical_formula()}_brownmillerite'
 
 
 def get_spinel_tag(atoms_row):
@@ -77,10 +39,7 @@ def get_spinel_tag(atoms_row):
 
 
 def mp_fun(kwarg_list):
-    '''Create a database with SQS structures based on 80 atom cubic and
-    orthorhombic perovskite supercells, from which up to ten oxygen atoms have
-    been removed, as well as a corresponding brownmillerite structure with the
-    same metallic elements.
+    '''Create SQS databases for a list of keyword argument sets
 
     Parameters
     ----------
@@ -91,16 +50,14 @@ def mp_fun(kwarg_list):
         build_sqs_db(**kwargs)
 
 
-def build_sqs_structures(directory='wang', selection=None, processes=1, n_steps=None,
+def build_sqs_structures(directory='spinel', selection=None, processes=1, n_steps=None,
                          asynchronus=True, dimensions=(1, 2, 3), n_vacancies_max=8,
                          random_seed=None, max_cations=None):
 
-    '''Create databases with SQS structures based on 80 atom cubic and
-    orthorhombic perovskite supercells, from which up to ten oxygen atoms have
-    been removed, as well as a corresponding brownmillerite structure with the
-    same metallic elements. If no cycle folders are found the configurations
-    are taken from the training database and othwerise from the sample text
-    file for the latest cycle.
+    '''Create databases with SQS structures of the 84-atom spinel supercell
+    with 0 to n_vacancies_max - 1 oxygen vacancies. If only cycle0 exists the
+    compositions are taken from the training database, and otherwise from
+    sample.db of the latest cycle.
 
     Parameters
     ----------
@@ -123,7 +80,11 @@ def build_sqs_structures(directory='wang', selection=None, processes=1, n_steps=
     dimensions : tuple
         SQS supercell dimensions (default: (1, 2, 3))
     n_vacancies_max : int
-        Maximum number of oxygen vacancies in supercell (default: 8)
+        number of vacancy counts, 0 to n_vacancies_max - 1 (default: 8)
+    random_seed : int
+        seed of the SQS generation; the active learning loop passes the run seed
+    max_cations : int
+        skip structures with more distinct cations than this
     '''
     
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -255,8 +216,7 @@ if __name__ == '__main__':
     parser.add_argument('--directory',
                         type=str,
                         default='spinel',
-                        choices=['spinel'],
-                        help='data directory')
+                        help='run directory')
     parser.add_argument('--min_id',
                         type=int,
                         default=None,
@@ -273,7 +233,12 @@ if __name__ == '__main__':
     parser.add_argument('--dimensions', type=int, nargs=3, default=[1, 2, 3],
                         help='SQS supercell dimensions (default: 1 2 3)')
     parser.add_argument('--n-vacancies-max', type=int, default=8,
-                        help='Maximum number of oxygen vacancies in supercell (default: 8)')
+                        help='number of vacancy counts, 0 to n - 1 (default: 8)')
+    parser.add_argument('--random-seed', type=int, default=None,
+                        help='seed of the SQS generation; the active learning loop '
+                             'passes the run seed')
+    parser.add_argument('--max-cations', type=int, default=None,
+                        help='skip structures with more distinct cations; the runs used 8')
     args = parser.parse_args()
 
     # parse selection
@@ -293,14 +258,10 @@ if __name__ == '__main__':
     if processes is None:
         processes = int(os.getenv('SLURM_NTASKS', 1))
 
-    # Create databases with SQS structures based on 80 atom cubic and
-    # orthorhombic perovskite supercells, from which up to ten oxygen atoms
-    # have been removed, as well as a corresponding brownmillerite structure
-    # with the same metallic elements. If no cycle folders are found the
-    # configurations are taken from the training database and othwerise from
-    # the sample text file for the latest cycle.
     build_sqs_structures(directory=args.directory, selection=selection,
                          processes=processes, dimensions=tuple(args.dimensions),
-                         n_vacancies_max=args.n_vacancies_max)
+                         n_vacancies_max=args.n_vacancies_max,
+                         random_seed=args.random_seed,
+                         max_cations=args.max_cations)
 
     os.chdir(cwd)

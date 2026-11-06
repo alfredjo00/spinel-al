@@ -5,17 +5,12 @@
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn.functional as F
-import torch.nn as nn
-from torch.optim import Adam
 import gpytorch
 from gpytorch import kernels
 
-from glob import glob
 from ase import Atoms
 from ase.db import connect
 from sklearn.mixture import GaussianMixture
-from torch.utils.data import DataLoader
 
 import os
 import sys
@@ -409,28 +404,6 @@ def train_GP_new(model, train_x, train_y, n_epochs, lr=0.0075, verbose=True, log
     return _loss
 
 
-def calculate_score(new_samples, method_list, iteration, n_samples):
-    """Calculates score for active learning based on a polynomial combination of methods.
-    This currently pressumes method list is ['otc','Sconf_R','bartel_tolerance']"""
-    a = 0.8 - iteration * 0.06 
-    if a > 0.2:
-        b = 0.1 + iteration * 0.0475
-        c = 0.1 + iteration * 0.0125
-    else:
-        a=0.2
-        b=0.55
-        c=0.25
-    
-    print(f'Calculating score with a={a}, b={b}, c={c}')
-    
-    new_samples['score'] = (a * new_samples[method_list[0]] + 
-                            b * new_samples[method_list[1]] - 
-                            c * new_samples[method_list[2]])
-    return new_samples.nlargest(n_samples, 'score')
-
-
-
-
 def _passes_stability_filters(row, elements, a_elements, b_elements,
                               scaling_dictionary, natoms):
     """Check if a candidate composition passes tolerance and charge neutrality filters.
@@ -539,7 +512,7 @@ def _otc_physical_upper_bound(rounded_df, elements, natoms, config):
 
     otc_max = mass_O * (config.n_vacancies_max - 1) / m_total   # physical mass fraction
 
-    if config.predict_landscape:
+    if config.predict_landscape or getattr(config, 'use_ceiling', False):
         return otc_max
 
     forward = getattr(config, 'forward_transform', None)
@@ -582,6 +555,13 @@ def export_top_unique(new_samples, elements, method_list, n_samples, sample_name
     # Copy and round to tol
     rounded_df = new_samples.copy()
     rounded_df.loc[:, elements[0]:elements[-1]] = (rounded_df.loc[:, elements[0]:elements[-1]].div(tol).round().mul(tol))
+
+    # --model ceiling: no surrogate, so the ranking column is the physical
+    # ceiling itself (lightest fully oxidised 84-atom cell first)
+    if config is not None and getattr(config, 'use_ceiling', False):
+        new_samples = new_samples.copy()
+        new_samples[method_list[0]] = _otc_physical_upper_bound(rounded_df, elements, natoms, config)
+        rounded_df[method_list[0]] = new_samples[method_list[0]]
 
     # Clip the ranking column to the physical OTC ceiling before anything is
     # selected. Done here rather than in the acquisition function so that it
@@ -979,7 +959,11 @@ def samples_GP(wae_model, model_dict, sample_name, latents, iteration, method_li
     predictions_dict = {}  # Store mean predictions for logging selected samples
     uncertainties_dict = {}  # Store uncertainties for logging selected samples
 
-    for i in range(n_props):
+    # --model ceiling has no GP: placeholder values, ranked in export_top_unique
+    if model_dict is None:
+        sample_list = [[0.0] * len(decoded_samples)] * n_props
+
+    for i in range(n_props if model_dict is not None else 0):
         model = f'model{i}'
 
         # Move data to model's device and set model to eval mode
@@ -993,14 +977,11 @@ def samples_GP(wae_model, model_dict, sample_name, latents, iteration, method_li
 
         all_means, epistemic_stds, total_stds = model_dict[model].predict_decomposed(gp_input)
 
-        # Acquisition uses the latent (epistemic) std by default. The observation
-        # noise sigma_n is irreducible, so folding it in only adds undirected
-        # randomness to the Thompson draw -- and because sigma_n is homoscedastic
-        # it inflates every candidate equally, compressing the relative spread in
-        # sigma and pushing acquisition toward random search. This also puts the
-        # GP on the same footing as MC dropout, the deep ensemble and the MOGP,
-        # all of which already sample epistemic-only (member spread / latent f).
-        all_stds = total_stds if config.gp_observation_noise else epistemic_stds
+        # Acquisition uses the latent (epistemic) std. The observation noise
+        # sigma_n is irreducible and homoscedastic, so including it would add
+        # undirected randomness to the Thompson draw. This matches MC dropout, the
+        # deep ensemble and the multi-output GP, which also sample epistemic only.
+        all_stds = epistemic_stds
 
         # Log prediction statistics for all candidates
         property_name = method_list[i] if i < len(method_list) else f'model{i}'
@@ -1042,9 +1023,10 @@ def samples_GP(wae_model, model_dict, sample_name, latents, iteration, method_li
                                     natoms=config.atoms_in_structure, config=config)
 
     # Log predictions and uncertainties of selected samples
-    selected_indices = selected_df.index.values
-    log_selected_sample_predictions(selected_indices, predictions_dict, uncertainties_dict,
-                                   iteration, method_list, sampling_arg, log_path, cycle=cycle)
+    if predictions_dict:
+        selected_indices = selected_df.index.values
+        log_selected_sample_predictions(selected_indices, predictions_dict, uncertainties_dict,
+                                       iteration, method_list, sampling_arg, log_path, cycle=cycle)
 
 
 def log_gp_statistics(means, epistemic_stds, total_stds, iteration, property_name, log_path):
@@ -1097,51 +1079,6 @@ def log_gp_statistics(means, epistemic_stds, total_stds, iteration, property_nam
     # Write to CSV
     os.makedirs(log_path, exist_ok=True)
     stats_file = os.path.join(log_path, 'gp_stats.csv')
-    stats_df = pd.DataFrame([stats])
-
-    if os.path.exists(stats_file):
-        stats_df.to_csv(stats_file, index=False, mode='a', header=False)
-    else:
-        stats_df.to_csv(stats_file, index=False)
-
-
-def log_selected_sample_uncertainties(selected_indices, uncertainties_dict, iteration, method_list, sampling_arg, log_path):
-    """
-    Log uncertainties of the final selected samples to CSV.
-
-    Parameters
-    ----------
-    selected_indices : array-like
-        Indices of selected samples in the candidate pool
-    uncertainties_dict : dict
-        Dictionary mapping property names to arrays of uncertainties for all candidates
-    iteration : int
-        Current active learning iteration
-    method_list : list
-        List of property names
-    sampling_arg : str
-        Acquisition strategy used ('thompson', 'greedy', 'explore')
-    log_path : str
-        Directory path where statistics CSV will be saved
-    """
-    stats = {
-        'iteration': iteration,
-        'sampling_strategy': sampling_arg,
-        'n_selected': len(selected_indices)
-    }
-
-    # Add uncertainty statistics for each property
-    for prop in method_list:
-        if prop in uncertainties_dict:
-            selected_uncs = uncertainties_dict[prop][selected_indices]
-            stats[f'{prop}_unc_min'] = float(np.min(selected_uncs))
-            stats[f'{prop}_unc_mean'] = float(np.mean(selected_uncs))
-            stats[f'{prop}_unc_max'] = float(np.max(selected_uncs))
-            stats[f'{prop}_unc_std'] = float(np.std(selected_uncs))
-
-    # Write to CSV
-    os.makedirs(log_path, exist_ok=True)
-    stats_file = os.path.join(log_path, 'selected_sample_stats.csv')
     stats_df = pd.DataFrame([stats])
 
     if os.path.exists(stats_file):
@@ -1643,34 +1580,6 @@ def create_df(method_list, db_name, elements, use_quadratic_fit_otc=False, selec
     return df
 
 
-def normalize_and_scale(raw_x, method_list, use_zscore=True):
-    """Given a numpy array and a list of the propertie used,
-     normalize to 0 mean variance 1 and optionally min-max scale the columns of properties
-      (This pressumes there are the first columns as produced by 'create_df')
-
-     use_zscore: If True, use z-score normalization (mean=0, std=1) - better for NLL loss
-                 If False, use min-max scaling [0, 1] - legacy behavior
-     """
-    for i in range(len(method_list)): # Normalize and scale property columns
-            # make a copy of the property column for normalization
-            prop_column = raw_x[:, i].copy()
-
-            if use_zscore:
-                # Z-score normalization (better for NLL loss with ensemble)
-                prop_mean = prop_column.mean()
-                prop_std = prop_column.std()
-                if prop_std > 1e-8:  # Avoid division by zero
-                    raw_x[:,i] = (prop_column - prop_mean) / prop_std
-                else:
-                    raw_x[:,i] = prop_column - prop_mean
-            else:
-                # Min-max scaling (legacy)
-                prop_min = prop_column.min()
-                prop_max = prop_column.max()
-                if (prop_max - prop_min) > 1e-8:
-                    raw_x[:,i] = (prop_column - prop_min) / (prop_max - prop_min)
-    return raw_x
-
 def _apply_acquisition_strategy(means, stds, sampling_arg, device, distribution=None):
     """
     Apply acquisition strategy (thompson, explore, greedy) to predictions.
@@ -1835,67 +1744,6 @@ def _fit_quadratic_and_find_minimum(energies, vacancy_points):
             v_opt[i] = np.clip(v_min, min_vac, max_vac)
 
     return v_opt
-
-
-def compute_delta_v_from_gibbs(gibbs_predictions, n_vacancies_max, fit_ar=False):
-    """
-    Compute delta_v from Gibbs energy landscape predictions.
-    
-    This function extracts delta_v = min(FR) - min(AR) from predicted Gibbs landscapes.
-    
-    For most spinel materials, AR landscape is monotonically increasing (min at v=0),
-    so we only fit quadratics to FR to find its minimum. This cuts computational cost in half.
-    
-    Parameters
-    ----------
-    gibbs_predictions : torch.Tensor or np.ndarray
-        Gibbs energy predictions [N, D] where D = 2 * n_vacancies_max
-        First n_vacancies_max columns are AR energies, rest are FR energies
-    n_vacancies_max : int
-        Number of vacancy levels (e.g., 8 for vacancies 0-7)
-    fit_ar : bool, optional
-        If True, fit quadratics to AR landscape. If False (default), assume AR is
-        monotonically increasing with min at v=0 (computational optimization)
-    
-    Returns
-    -------
-    delta_v : np.ndarray
-        Delta vacancy values [N] (FR optimal vacancy - AR optimal vacancy)
-    
-    Notes
-    -----
-    - Works in normalized space (no denormalization required for diversity metric)
-    - Converts torch tensors to numpy internally
-    - Default behavior (fit_ar=False) assumes AR minimum is at vacancy=0
-    """
-    # Convert to numpy if needed
-    if isinstance(gibbs_predictions, torch.Tensor):
-        gibbs_np = gibbs_predictions.detach().cpu().numpy()
-    else:
-        gibbs_np = gibbs_predictions
-    
-    # Split into AR and FR landscapes
-    ar_energies = gibbs_np[:, :n_vacancies_max]  # [N, n_vac]
-    fr_energies = gibbs_np[:, n_vacancies_max:]  # [N, n_vac]
-    
-    # Find optimal vacancies
-    vacancy_points = np.arange(n_vacancies_max)
-    
-    if fit_ar:
-        # Fit quadratic to AR (expensive, only needed if AR is non-monotonic)
-        v_ar_opt = _fit_quadratic_and_find_minimum(ar_energies, vacancy_points)  # [N]
-    else:
-        # AR is monotonically increasing -> minimum is at v=0
-        v_ar_opt = np.zeros(gibbs_np.shape[0])  # [N] all zeros
-    
-    # Fit quadratic to FR
-    v_fr_opt = _fit_quadratic_and_find_minimum(fr_energies, vacancy_points)  # [N]
-    
-    # Compute delta_v = v_fr_opt - v_ar_opt
-    # With fit_ar=False, this simplifies to delta_v = v_fr_opt
-    delta_v = v_fr_opt - v_ar_opt  # [N]
-    
-    return delta_v
 
 
 def _predict_otc_from_landscape(ensemble, decoded_samples, config, iteration=None, log_path=None, logger=None):
@@ -2163,25 +2011,6 @@ def _predict_otc_from_landscape(ensemble, decoded_samples, config, iteration=Non
         per_member_data = None
 
     return otc_mean, otc_std, gibbs_means, gibbs_stds, otc_distribution, delta_v_array, m_total_np, per_member_data
-
-
-def normalize_and_scale_GP(raw_x, method_list, y_name):
-    """Given a numpy array and a list of the propertie used,
-     normalize to 0 mean variance 1 and min-max scale the columns of properties
-      (This pressumes there are the first columns as produced by 'create_df')
-      This saves each y in a dict with the name of the property as key"""
-    tens_dict = {}
-    n_props = len(method_list)
-    for i in range(n_props): # Normalize and scale property columns
-            # make a copy of the property column for normalization
-            prop_column = raw_x[:, i].copy()
-            #Normalize and min max scale propert column
-            prop_min = prop_column.min()
-            prop_max = prop_column.max()
-            raw_x[:,i] = (prop_column-prop_min)/(prop_max-prop_min) # min max scale
-            tens_dict[f'{y_name}{i}'] = torch.from_numpy(raw_x[:,i]).float() # Save each property in its own y tensor as we will train 3 different GPs
-
-    return raw_x, tens_dict
 
 
 def samples_ensemble(wae_model, ensemble, sample_name, latents, iteration, method_list, config, log_path,

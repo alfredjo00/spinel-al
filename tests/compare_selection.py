@@ -2,8 +2,8 @@
 
     python3 tests/compare_selection.py <arm> <seed>
 
-Reads code/oxygen-carrier-discovery/heoc/spinel_rev_<arm>_s<seed>/cycle1/sample.csv and
-data/reference_cycle1/<arm>_s<seed>.csv. Compositions are compared as cation counts
+Reads oxygen-carrier-discovery/heoc/spinel_rev_<arm>_s<seed>/cycle1/sample.csv and
+tests/reference_cycle1/<arm>_s<seed>.csv. Compositions are compared as cation counts
 in the 84-atom cell. Uses only the Python standard library.
 """
 import csv
@@ -33,9 +33,9 @@ def formula(counts):
 def main():
     arm, seed = sys.argv[1], sys.argv[2]
     root = Path(__file__).resolve().parent.parent
-    rerun = read_selection(root / 'code/oxygen-carrier-discovery/heoc'
+    rerun = read_selection(root / 'oxygen-carrier-discovery/heoc'
                            / f'spinel_rev_{arm}_s{seed}/cycle1/sample.csv')
-    reference = read_selection(root / f'data/reference_cycle1/{arm}_s{seed}.csv')
+    reference = read_selection(root / f'tests/reference_cycle1/{arm}_s{seed}.csv')
 
     rerun_set = {c for c, _ in rerun}
     reference_set = {c for c, _ in reference}

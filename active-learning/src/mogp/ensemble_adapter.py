@@ -17,7 +17,6 @@ Draws use `observation_noise=False`. Each member must be a *smooth* landscape,
 because the quadratic fit downstream reads curvature; per-task observation noise
 is independent across vacancy levels and would corrupt the fitted minimum.
 """
-import numpy as np
 import torch
 
 

@@ -3,8 +3,6 @@
 import argparse
 from glob import glob
 import math
-import os
-import sys
 import warnings
 from pyscripts_utils import (setup_metal_path, working_directory, PARENT_DIR,
                              get_latest_cycle, get_process_count)

@@ -1,47 +1,14 @@
-"""Configuration module for HEO Active Learning Pipeline.
+"""Configuration of the active learning loop: command-line options and the Config class.
 
-This module contains all configuration parameters, command-line argument parsing,
-and the Config class that consolidates all settings.
+run_arm.sh at the repository root gives the options of each strategy in the article.
+An example, the Gaussian process with the Gibbs-vector target, seed 1:
 
-Example usage, on GPU HPC:
-    apptainer for environment
-    all --bind only necessary for --slurm flags
-
-apptainer exec --nv \
-    --bind /usr/bin/sbatch \
-    --bind /usr/bin/scancel \
-    --bind /usr/bin/squeue \
-    --bind /usr/bin/sacct \
-    --bind /usr/bin/scontrol \
-    --bind /usr/lib64/slurm \
-    --bind /etc/slurm \
-    --bind /usr/lib64/libmunge.so.2 \
-    --bind /run/munge \
-    --bind /etc/passwd \
-    --bind /etc/group \
-    /proj/berzelius-xxxx/users/x_alfju/pytorch_al_img.sif \
-    python -u active_learning_HEO.py \
-        --method spinel_v2 \
-        --log-path /proj/berzelius-xxxx/users/x_alfju/oxygen-carrier-discovery/heoc/spinel_v2/20260212_102404 \
-        -b 3 \
-        -t 10 \
-        --n-samples-total 25000 \
-        --model ensemble \
-        --use-validation \
-        --val-split 0.15 \
-        --val-split-mode random \
-        --round-compositions \
-        --predict-landscape \
-        --quadratic-fit-otc \
-        --quadratic-fit-landscape-otc \
-        --ensemble-size 16 \
-        --bootstrap-fraction none \
-        --phonon-slurm-jobs 4 \
-        --slurm-container /proj/berzelius-xxxx/users/x_alfju/pytorch_al_img.sif \
-        --slurm-account berzelius-xxxx \
-        --slurm-phonon-batch 3
-  
-
+    python -u active_learning_HEO.py --method spinel_rev_mogp_s1 --auto-resume --seed 1 \
+        --model mogp --ensemble-size 16 --mogp-rank 1 \
+        --predict-landscape --quadratic-fit-landscape-otc \
+        --cycles 21 -b 3 -t 10 --n-samples-total 25000 --max-element-count 8 \
+        --use-validation --val-split 0.15 --val-split-mode random \
+        --round-compositions --quadratic-fit-otc --bootstrap-fraction none
 """
 
 import argparse
@@ -76,7 +43,6 @@ class Config:
         self.ensemble_size = args.ensemble_size
         self.bootstrap_fraction = args.bootstrap_fraction
         self.method = args.method
-        self.sampling = args.sampling
         self.max_element_count = args.max_element_count
         self.b = args.b
         self.t = args.t
@@ -85,16 +51,12 @@ class Config:
         self.val_split = args.val_split
         self.overwrite = args.overwrite
         self.val_split_mode = args.val_split_mode
-        self.ensemble_calibrate = args.ensemble_calibrate
         self.round_compositions = args.round_compositions
         self.predict_landscape = args.predict_landscape
         self.clip_otc_physical = args.clip_otc_physical
         self.quadratic_fit_otc = args.quadratic_fit_otc
         self.quadratic_fit_landscape_otc = args.quadratic_fit_landscape_otc
-        self.gp_observation_noise = args.gp_observation_noise
-        # getattr, not args.auto_resume: the SLURM phonon workers build a Config
-        # from their own argparse namespace, which has no such flag.
-        self.auto_resume = getattr(args, 'auto_resume', False)
+        self.auto_resume = args.auto_resume
 
         self.use_gp = self.model == 'gp'
         self.use_mc = self.model == 'mc'
@@ -102,6 +64,8 @@ class Config:
         self.use_mogp = self.model == 'mogp'
         self.use_delta_gp = self.model == 'delta_gp'
         self.use_delta_de = self.model == 'delta_de'
+        self.use_ceiling = self.model == 'ceiling'
+        self.sampling = 'thompson'  # acquisition by Thompson sampling, as in all runs
 
         # ==================== CONSTANTS ====================
         self.default_cycles = args.cycles
@@ -242,16 +206,6 @@ class Config:
         # 'zscore' = z-score (mean=0, std=1) for ensemble/NLL
         # 'minmax' = min-max [0,1] for GP/MC
         self.normalization = None  # Will be set by load_training_data()
-
-        # ==================== SLURM PHONON FAN-OUT ====================
-        self.phonon_slurm_jobs = args.phonon_slurm_jobs
-        self.slurm_account = args.slurm_account
-        self.slurm_container = args.slurm_container
-        self.slurm_time = args.slurm_time or '0-12:00:00'
-        self.slurm_constraint = getattr(args, 'slurm_constraint', 'thin')
-        self.slurm_poll_interval = 30  # seconds between squeue checks
-        self.slurm_queue_timeout = 600  # seconds before cancelling 
-        self.slurm_phonon_batch = args.slurm_phonon_batch
 
         # Worker processes querying the Materials Project during the phase
         # stability stage. Kept low because concurrent runs share one API quota
@@ -477,6 +431,8 @@ class Config:
                         'chemical potential offset, not modelled')
         elif self.use_gp:
             logger.info('Using Gaussian Process for uncertainty estimation')
+        elif self.use_ceiling:
+            logger.info('No surrogate: ranking the WAE pool by the physical OTC ceiling')
         else:
             logger.info(f'Using MC Dropout for uncertainty estimation (full dropout enabled)')
     
@@ -621,52 +577,8 @@ class Config:
 
         return config_file
 
-    def load_from_file(self, config_file, logger=None):
-        """Load configuration from JSON file and override current settings.
-
-        Args:
-            config_file: Path to config.json file
-            logger: Optional logger for info messages
-
-        Returns:
-            self: Returns self for method chaining
-        """
-        import json
-        import os
-
-        if not os.path.exists(config_file):
-            raise FileNotFoundError(f'Config file not found: {config_file}')
-
-        with open(config_file, 'r') as f:
-            config_dict = json.load(f)
-
-        # Remove special keys that shouldn't be loaded
-        config_dict.pop('_command_line_args', None)
-        config_dict.pop('inverse_transform', None)  # Will be set during data loading
-
-        # Convert device string back to torch.device
-        if 'device' in config_dict:
-            device_str = config_dict['device']
-            if 'cuda' in device_str:
-                config_dict['device'] = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-            else:
-                config_dict['device'] = torch.device('cpu')
-
-        # Update attributes
-        for key, value in config_dict.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
-                if logger:
-                    logger.debug(f'Loaded config.{key} = {value}')
-
-        if logger:
-            logger.info(f'Configuration loaded from: {config_file}')
-
-        return self
-
-
-def parse_args():
-    """Parse command line arguments.
+def parse_args(argv=None):
+    """Parse command line arguments, from sys.argv or the list argv.
 
     If --config-file is provided, loads saved command-line args from that file
     and uses them as defaults. Any additional CLI args will override the saved values.
@@ -676,9 +588,10 @@ def parse_args():
 
     # Check for --config-file early to load saved args as defaults
     config_file = None
-    for i, arg in enumerate(sys.argv):
-        if arg == '--config-file' and i + 1 < len(sys.argv):
-            config_file = sys.argv[i + 1]
+    args_list = sys.argv[1:] if argv is None else list(argv)
+    for i, arg in enumerate(args_list):
+        if arg == '--config-file' and i + 1 < len(args_list):
+            config_file = args_list[i + 1]
             break
         elif arg.startswith('--config-file='):
             config_file = arg.split('=', 1)[1]
@@ -701,9 +614,10 @@ def parse_args():
                        help='Custom path for logs/saves. If not provided, uses default: heoc_path/method/timestamp')
     parser.add_argument('--checkpoint-dir', type=str,
                        help='Directory to save checkpoints. If not provided, uses log_path')
-    parser.add_argument('--model', type=str, default='ensemble', choices=['gp', 'mc', 'ensemble', 'mogp', 'delta_gp', 'delta_de'],
+    parser.add_argument('--model', type=str, default='ensemble', choices=['gp', 'mc', 'ensemble', 'mogp', 'delta_gp', 'delta_de', 'ceiling'],
                        help='Method to use for uncertainty estimation (default: gp). '
-                            '"mogp" is the ICM multi-output GP and requires --predict-landscape.')
+                            '"mogp" is the ICM multi-output GP and requires --predict-landscape. '
+                            '"ceiling" fits no surrogate and ranks the WAE pool by the physical OTC ceiling (baseline).')
     parser.add_argument('--ensemble-size', type=int, default=16,
                        help='Number of ensemble members (default: 16)')
     parser.add_argument('--seed', type=int, default=None,
@@ -790,9 +704,6 @@ def parse_args():
                        help='Bootstrap sampling fraction for ensemble training (default: 0.8, use "None" to train all members on full dataset)')
     parser.add_argument('--method', type=str, default='spinel',
                        help='Method/directory name for organizing outputs (default: spinel)')
-    parser.add_argument('--sampling', type=str, default='thompson',
-                       choices=['thompson', 'explore', 'greedy'],
-                       help='Sampling strategy for active learning (default: thompson)')
     parser.add_argument('--max-element-count', type=int, default=None,
                        help='Maximum number of unique cations allowed in decoded samples.')
     parser.add_argument('-b', type=int, default=None,
@@ -814,8 +725,6 @@ def parse_args():
     parser.add_argument('--val-split-mode', type=str, default='random',
                        choices=['random', 'sequential'],
                        help='Validation split mode: "random" (default) or "sequential" (first N%% samples)')
-    parser.add_argument('--ensemble-calibrate', action='store_true',
-                       help='Apply post-hoc temperature calibration to ensemble uncertainty (default: False)')
     parser.add_argument('--round-compositions', action='store_true',
                        help='Round decoded compositions to discrete atom counts (n*1/84) to eliminate discretization noise (default: False)')
     parser.add_argument('--predict-landscape', action='store_true',
@@ -826,32 +735,10 @@ def parse_args():
                        help='If cycles beyond cycle0 already exist, continue the most recent run '
                             'in this method directory instead of erroring. Makes a jobscript safe '
                             'to resubmit after a walltime kill or preemption. Default: False.')
-    parser.add_argument('--gp-observation-noise', action='store_true',
-                       help='Draw GP Thompson samples from the posterior predictive (adds the learned '
-                            'sigma_n) instead of the latent f. Default False, i.e. epistemic-only, which '
-                            'matches the MC, ensemble and MOGP arms. Kept as an ablation switch only.')
 
-    # SLURM fan-out for phonon calculations
-    parser.add_argument('--phonon-slurm-jobs', type=int, default=0,
-                       help='Number of SLURM GPU jobs to fan out for phonon calculations. '
-                            '0 = run locally (default), N > 0 = submit N sbatch jobs each processing 1/N of the SQS dbs.')
-    parser.add_argument('--slurm-account', type=str, default=None,
-                       help='SLURM account for phonon fan-out jobs (e.g. berzelius-2025-374)')
-    parser.add_argument('--slurm-container', type=str, default=None,
-                       help='Path to Apptainer/Singularity container image for phonon jobs')
-    parser.add_argument('--slurm-time', type=str, default='0-04:00:00',
-                       help='Time limit for each phonon SLURM job (default: 0-04:00:00)')
-    parser.add_argument('--slurm-constraint', type=str, default='thin',
-                       help="Node feature constraint for phonon SLURM jobs (-C). Default 'thin' "
-                            "keeps jobs on the 40 GB A100 nodes; the 80 GB 'fat' nodes cost 2x "
-                            "and buy nothing here. Pass '' to drop the constraint.")
-    parser.add_argument('--slurm-phonon-batch', type=int, default=0,
-                       help='Batch size for slurm phonon.')
-    
-
-        # Apply saved args as defaults (CLI args will override)
+    # Apply saved args as defaults (CLI args override them)
     if saved_args:
         # Convert underscores back to match argparse attribute names
         parser.set_defaults(**saved_args)
         
-    return parser.parse_args()
+    return parser.parse_args(argv)

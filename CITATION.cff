@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite the article and the Zenodo record."
+title: "Active learning of spinel oxygen carriers"
+type: software
+license: MIT
+authors:
+  - family-names: Juhlin Onbeck
+    given-names: Alfred
+    affiliation: Chalmers University of Technology
+  - family-names: Brorsson
+    given-names: Joakim
+    affiliation: Chalmers University of Technology
+  - family-names: Hildingsson
+    given-names: Joel
+preferred-citation:
+  type: article
+  title: "Prediction targets and surrogate models for active learning of spinel oxygen carriers"
+  authors:
+    - family-names: Juhlin Onbeck
+      given-names: Alfred
+    - family-names: Staničić
+      given-names: Ivana
+    - family-names: Yadav
+      given-names: Radhey Shyam
+    - family-names: Mattisson
+      given-names: Tobias
+    - family-names: Hellman
+      given-names: Anders
+references:
+  - type: dataset
+    title: "Data for: Prediction targets and surrogate models for active learning of spinel oxygen carriers"
+    doi: 10.5281/zenodo.21283967

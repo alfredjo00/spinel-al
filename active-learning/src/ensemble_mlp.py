@@ -8,7 +8,6 @@ Implements standalone ensemble of MLPs trained on compositions.
 import torch
 import torch.nn as nn
 import numpy as np
-from torch.utils.data import DataLoader, TensorDataset
 
 
 class EnsembleMember(nn.Module):
@@ -730,76 +729,3 @@ def train_deep_ensemble(ensemble, train_x, train_y, val_x=None, val_y=None,
     
 
     return results
-
-
-def calibrate_ensemble(ensemble, val_x, val_y, logger=None):
-    """
-    Currently not really needed since it doesnt affect ensemble sampling.
-    
-    Perform post-hoc temperature calibration on ensemble using validation data.
-    
-    Finds optimal temperature T that minimizes validation NLL by scaling the
-    predicted variances: var_calibrated = T² * var_predicted
-    
-    
-    Parameters
-    ----------
-    ensemble : DeepEnsemble
-        Trained ensemble to calibrate
-    val_x : torch.Tensor
-        Validation inputs [N_val, input_dim]
-    val_y : torch.Tensor
-        Validation targets [N_val]
-    logger : logging.Logger, optional
-        Logger for progress messages
-    
-    Returns
-    -------
-    float
-        Optimal temperature value (will be stored in ensemble.temperature)
-    """
-    import scipy.optimize
-    
-    # Ensure tensors are on correct device
-    val_x = val_x.to(ensemble.device)
-    val_y = val_y.to(ensemble.device)
-    if val_y.dim() == 1:
-        val_y = val_y.unsqueeze(1)
-    
-    # Save original temperature
-    orig_temp = ensemble.temperature
-    
-    def nll_with_temperature(T):
-        """Compute validation NLL with temperature scaling"""
-        ensemble.temperature = T
-        
-        with torch.no_grad():
-            pred = ensemble.predict(val_x)
-            mean = pred['mean']
-            var = pred['aleatoric_std'] ** 2  # Already scaled by T² in predict()
-            
-            # NLL: 0.5 * (log(2π*var) + (y - μ)² / var)
-            nll = 0.5 * (torch.log(2 * np.pi * var) + (val_y - mean) ** 2 / var)
-            return nll.sum(dim=-1).mean().item()
-    
-    # Optimize temperature (search range 0.1 to 10.0)
-    result = scipy.optimize.minimize_scalar(
-        nll_with_temperature,
-        bounds=(0.1, 10.0),
-        method='bounded'
-    )
-    
-    optimal_temp = result.x
-    optimal_nll = result.fun
-    
-    # Restore to optimal temperature
-    ensemble.temperature = optimal_temp
-    
-    if logger:
-        logger.info(f'Temperature calibration: T={optimal_temp:.4f}, Val NLL={optimal_nll:.6f}')
-        if optimal_temp < 0.5:
-            logger.warning(f'Temperature < 0.5 indicates significant overconfidence')
-        elif optimal_temp > 2.0:
-            logger.warning(f'Temperature > 2.0 indicates significant underconfidence')
-    
-    return optimal_temp

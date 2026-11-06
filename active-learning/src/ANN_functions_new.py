@@ -42,21 +42,6 @@ class FeatureDataset(Dataset): #from numpy to tensor (pytroch-readable)
     def __getitem__(self, idx):
         return torch.FloatTensor(self.x[idx])#, torch.FloatTensor(self.y[idx])
     
-class AttributeDataset(Dataset): # this is for classifier 
-    '''
-    Args: x is a 2D numpy array [x_size, x_features]
-    '''
-    def __init__(self, x, y):
-        self.x = x
-        self.y = y
-    def __len__(self):
-        return self.x.shape[0]
-    def __getitem__(self, idx):
-        return torch.Tensor(self.x[idx]), torch.Tensor(self.y[idx])
-    
-
-
-
 """
 Cases for different decoders
  only WAE no regression decoder
@@ -237,37 +222,6 @@ class WAE_modular(nn.Module):
     
 
 # a MLP for regression of otc from 
-class regression_MLP(nn.Module):
-    def __init__(self, input_size):
-        super().__init__()
-        self.input_size = input_size
-        scale = 1
-        self.activation = nn.ReLU()
-        self.layers = [80,64,48]
-        self.layers = [int(x * scale) for x in self.layers]
-        self.dropout_rate = 0.10
-        # encoder
-
-        self.mlp = nn.Sequential(
-                            nn.Linear(self.input_size, self.layers[0]),
-                            nn.Dropout(self.dropout_rate),
-                            nn.LayerNorm(self.layers[0]),
-                            self.activation,
-                            nn.Linear(self.layers[0], self.layers[1]),
-                            nn.LayerNorm(self.layers[1]),
-                            self.activation,
-                            nn.Linear(self.layers[1], self.layers[2]),
-                            nn.LayerNorm(self.layers[2]),
-                            self.activation,
-                            nn.Linear(self.layers[2], 1)
-                            #nn.Softmax(dim=1) #(softmad along dimension 1)
-                            )
-        self.apply(weights_init)
-
-    def forward(self, x):
-        return self.mlp(x)
-
-
 def weights_init(m):
     classname = m.__class__.__name__
     if classname.find('BatchNorm') != -1:
@@ -561,68 +515,3 @@ def train_WAE(model, optimizer, dataloader, params, val_dataloader=None, logger=
     return loss_
 
 # OBS this is untested for parametertests at the moment.
-def train_WAE_testing_validation(model, optimizer, train_dataloader, val_dataloader, params):
-    num_epoch = params['num_epoch']
-    sigma = params['sigma']  # assuming the latent space follows Gaussian
-    MMD_lambda = params['MMD_lambda']  # WAE distance (maximum mean discrepancy)
-    latent_dim = params['latent_dim']
-
-    loss_ = []
-    val_loss = []
-    for epoch in range(num_epoch):
-        # start_time = time.time()
-        total_loss = 0.0
-        total_recon = 0.0
-        total_MMD = 0.0
-        total_clas = 0.0
-
-        # Training Phase
-        model.train()
-        for i, data in enumerate(train_dataloader):
-            x = data.to(device)
-            #print(x)
-            recon_x, z_tilde = model(x)  # latent space is Z_tilde
-
-            z = sigma * torch.randn(z_tilde.size()).to(device)  # z is sampled from a Gaussian that has the same dimension (but no relation to z_tilde).
-
-            recon_loss = F.l1_loss(recon_x, x, reduction='mean')  # Reconstruction loss
-            #print(recon_x,x)
-            #print(recon_loss)
-            MMD_loss = imq_kernel(z_tilde, z, h_dim=latent_dim).to(device)  # W-distance between z_tilde and z
-            MMD_loss = MMD_loss / x.size(0)  # averaging, because recon loss is mean.
-            loss = recon_loss + MMD_loss * MMD_lambda  # Total loss
-
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            total_loss += loss.item()
-            total_recon += recon_loss.item()
-            total_MMD += MMD_loss.item()
-            total_clas += torch.abs(x[:, 0] - recon_x[:, 0]).mean().item()
-
-        avg_loss = total_loss / len(train_dataloader)
-        avg_recon = total_recon / len(train_dataloader)
-        avg_MMD = total_MMD / len(train_dataloader)
-        avg_clas = total_clas / len(train_dataloader)
-
-       # Validation Phase
-        model.eval()
-        val_loss = 0.0
-        for i, data in enumerate(val_dataloader):
-            x = data.to(device)
-            recon_x, z_tilde = model(x)
-            z = sigma * torch.randn(z_tilde.size()).to(device)
-            MMD_loss = imq_kernel(z_tilde, z, h_dim=latent_dim).to(device)
-            MMD_loss = MMD_loss / x.size(0)
-            val_loss += (recon_loss + MMD_loss * MMD_lambda).item()
-
-        avg_val_loss = val_loss / len(val_dataloader)
-
-        loss_.append([avg_loss, avg_recon, avg_MMD, avg_clas, avg_val_loss])
-
-        if epoch % 50 == 0:
-            print('[{:03}/{:03}] Train Loss: {:.6f}, Recon Loss: {:.6f}, MMD Loss: {:.6f}, Val Loss: {:.6f}'.format(
-                epoch + 1, num_epoch, avg_loss, avg_recon, avg_MMD, avg_val_loss))
-
-    return loss_

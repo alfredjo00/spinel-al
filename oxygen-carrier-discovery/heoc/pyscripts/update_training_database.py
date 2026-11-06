@@ -17,13 +17,7 @@ import warnings
 sys.path.append(os.path.join(
     os.getcwd().split('oxygen-carrier-discovery')[0], 'metal'))
 from metal.applications.crystals.crystal_space import CrystalSpace
-from metal.applications.crystals.tools import (
-    add_structure_db,
-    get_rows_db,
-    get_row_ids,
-    get_average_abundance,
-    get_price,
-    get_mu_oxygen)
+from metal.applications.crystals.tools import add_structure_db, get_row_ids, get_average_abundance, get_price, get_mu_oxygen
 from ase.db import connect
 from build_training_database import (get_stability_factors,
                                      get_average_metal_abundance,
@@ -42,7 +36,7 @@ def _pool_init(spa_path):
     print(f'  [pool_init] Worker {os.getpid()} ready.', flush=True)
 
 
-def update_training_database(directory='wang', pattern='sqs_*.db', cycle=None,
+def update_training_database(directory='spinel', pattern='sqs_*.db', cycle=None,
                              asynchronus=True, use_lock_file=True,
                              processes=1, dimensions=(1, 2, 3), quadratic_fit=True):
     '''Update the database with training structures with the results from

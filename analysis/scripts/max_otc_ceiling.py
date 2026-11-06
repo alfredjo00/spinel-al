@@ -8,9 +8,8 @@ is that of the runs: at most MAX_CATIONS cation species, 0.77 <= tau <= 1.06 and
 neutrality, both from SpinelTolerance of the metal package. For comparison, the script
 also reports the highest C(x) in the initial dataset and among all acquisitions.
 
-Needs the metal package of code.zip and its dependencies (for example in the container
-of code.zip), with code/metal on PYTHONPATH. Reads the run databases. Its output is
-max_otc_ceiling.txt.
+Needs the metal package of this repository and its dependencies (for example in the run
+container). Reads the run databases. Its output is max_otc_ceiling.txt.
 """
 from contextlib import redirect_stdout
 import heapq
@@ -21,10 +20,11 @@ import sys
 from ase import Atoms
 from ase.data import atomic_masses, atomic_numbers
 from ase.db import connect
+from paths import HEOC, REPO
+
+sys.path.append(str(REPO / 'metal'))
 with redirect_stdout(io.StringIO()):  # metal reports optional packages on import
     from metal.applications.crystals.stability_factors import SpinelTolerance
-
-from paths import HEOC
 
 TOP = int(os.environ.get('TOP', '10'))
 MAX_POPS = int(os.environ.get('MAX_POPS', '2000000'))

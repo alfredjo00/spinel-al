@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+"""Create the crystal space of the spinel compositions, <directory>/crystal_space.spa.
+
+The space is built on the MgAl2O4 spinel prototype in <directory>/prototypes.db
+(build_prototype_database.py). A sites take Mg, Zn, Cu, Co, Ni, Ca or Li, B sites take
+Al, Cr, Ga, Ti, Fe, Mn, Zr, V, Sn or In, and oxygen sites take O or a vacancy (X).
+Compositions outside 0.77 <= spinel tolerance <= 1.06, or without a charge-neutral
+assignment of oxidation states, are filtered out.
+"""
 
 import argparse
 import os
@@ -8,29 +16,23 @@ sys.path.append(os.path.join(
 from metal.applications.crystals.crystal_space import CrystalSpace
 from metal.applications.crystals.tools import get_structures_db
 
+A_ELEMENTS = ['Mg', 'Zn', 'Cu', 'Co', 'Ni', 'Ca', 'Li']
+B_ELEMENTS = ['Al', 'Cr', 'Ga', 'Ti', 'Fe', 'Mn', 'Zr', 'V', 'Sn', 'In']
 
-def create_crystal_space(directory='wang'):
-    '''Create a crystal space based on  prototype structures represented by the
-    cubic and orthorhombic form of the perovskite CaMnO3 and the brownmillerite
-    Ca2Mn2O5
+
+def create_crystal_space(directory='spinel'):
+    '''Create the spinel crystal space and write it to <directory>/crystal_space.spa
 
     Parameters
     ----------
     directory
-        data directory, must contain either 'wang' or 'inaki'
+        data directory, which holds prototypes.db
     '''
 
-    if 'spinel' in directory:
-        replacements = {'Mg': ['Mg', 'Zn', 'Cu', 'Co', 'Ni', 'Ca'],
-                        'Al': ['Al', 'Cr', 'Ga', 'Ce', 'Ti', 'Fe', 'Mn', 'Zr', 'V'],
-                        'O': ['O', 'X']}
-    else:
-        raise ValueError(f'The directory must be "spinel", not'
-                         f' {directory}')
+    replacements = {'Mg': A_ELEMENTS, 'Al': B_ELEMENTS, 'O': ['O', 'X']}
 
     # read prototype structures
     structure_list = list(get_structures_db(f'{directory}/prototypes.db'))
-    print(structure_list)
 
     # define chemical symbols
     chemical_symbols_list = [[replacements[s] for s in structure.symbols] for
@@ -39,9 +41,10 @@ def create_crystal_space(directory='wang'):
     # define cutoffs
     cutoffs_list = [[6.0, 4.5]]
 
-    # define filters
+    # filters: compositions matching any of these are excluded
     filters_list = [[
-        {'key': 'spinel_tolerance', 'symbol': '>', 'value': 1},
+        {'key': 'spinel_tolerance', 'symbol': '>', 'value': 1.06},
+        {'key': 'spinel_tolerance', 'symbol': '<', 'value': 0.77},
         {'key': 'delta_charge_neutrality', 'symbol': '=', 'value': False}
         ]]
 
@@ -64,14 +67,9 @@ if __name__ == '__main__':
     parser.add_argument('--directory',
                         type=str,
                         default='spinel',
-                        choices=['spinel'],
                         help='data directory')
-
     args = parser.parse_args()
 
-    # Create a crystal space based on  prototype structures represented by the
-    # cubic and orthorhombic form of the perovskite CaMnO3 and the
-    # brownmillerite Ca2Mn2O5
     create_crystal_space(directory=args.directory)
 
     os.chdir(cwd)

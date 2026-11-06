@@ -12,7 +12,6 @@ import tempfile
 import traceback
 from typing import Callable, Dict, List, Tuple, Union
 import warnings
-import psutil
 
 from ase import Atoms
 from ase.db import connect
@@ -22,14 +21,13 @@ from ase.units import kB
 from pymatgen.ext.matproj import MPRester
 from pymatgen.analysis.phase_diagram import PhaseDiagram
 
-from scipy.optimize import minimize, milp, LinearConstraint, Bounds
+from scipy.optimize import milp, LinearConstraint, Bounds
 import time
 # Kept as a separate handle to the real module: `time` is swapped out in tests to
 # skip retry backoff, but waiting for another process holding the chemsys lock is
 # a genuine wall-clock wait and must not be skipped along with it.
 import time as _time
 
-from sklearn.calibration import CalibratedClassifierCV
 
 from .tools import _atoms_row_to_structure, get_row_ids, _add_structure_db
 from .thermodynamics import get_computed_entry
@@ -227,12 +225,6 @@ class PerovskiteTolerance(object):
         list of all symbols for elements on sublattice B
         """
         return [symbol for symbol in self.symbols if symbol in self.b_elements]
-
-    @cached_property
-    def element_indices(self):
-        """atomic indices for each element"""
-        return {element: [i for i, symbol in enumerate(self.symbols) if symbol
-                          == element] for element in set(self.symbols)}
 
     @cached_property
     def abx_elements(self):
@@ -874,17 +866,6 @@ class PerovskiteTolerance(object):
             print(f"  [ILP] Final result: {dict(sorted(result_dict.items()))}")
         return result_dict
 
-    def _estimate_memory_gb(self) -> float:
-        """Estimate peak memory usage for vectorized approach in GB."""
-        element_oxidation_combos = self._get_element_oxidation_combos()
-        ranges = [np.arange(len(element_oxidation_combos[el])) for el in self.elements]
-        n_rows = np.prod([len(r) for r in ranges]) if ranges else 0
-        dtype = np.uint16 if n_rows <= np.iinfo(np.uint16).max else np.uint32
-        if n_rows > 0:
-            bytes_per_element = np.dtype(dtype).itemsize
-            return (n_rows * len(ranges) * bytes_per_element * (len(ranges) + 2)) / (1024**3)
-        return 0
-
     @cached_property
     def oxidation_state(self) -> Dict[str, List[int]]:
         """
@@ -916,15 +897,6 @@ class PerovskiteTolerance(object):
         else:
             raise ValueError(f"Unknown oxidation_method: {method}. "
                            f"Choose from 'auto', 'vectorized', 'iterative', or 'ilp'.")
-
-    @cached_property
-    def abx_oxidation(self):
-        """average oxidation on the A, B and X sublattice based on the "best"
-        oxidation state"""
-
-        return {key: np.mean([oxidation for element in elements for oxidation
-                              in self.oxidation_state[element]])
-                for key, elements in self.abx_elements.items()}
 
     @cached_property
     def abx_radii(self):
@@ -986,38 +958,6 @@ class PerovskiteTolerance(object):
         return coordination_radii[coordination]['only_spin']
 
     @cached_property
-    def goldschmidt_tolerance(self) -> float:
-        """Calculate the Goldschmidt tolerance factor, which can be used to
-        judge if a given perovskite structure can be synthesised or not"""
-
-        return ((self.abx_radii['a'] + self.abx_radii['x']) /
-                (self.abx_radii['b'] + self.abx_radii['x']) / np.sqrt(2))
-
-    @cached_property
-    def bartel_tolerance(self) -> float:
-        """Calculate the Bartel tolerance factor, which can be used to judge if
-        a given perovskite structure can be synthesised or not"""
-
-        return (self.abx_radii['x'] / self.abx_radii['b'] -
-                self.abx_oxidation['a'] * (
-                    self.abx_oxidation['a'] - self.abx_radii['a'] /
-                    self.abx_radii['b'] /
-                    np.log(self.abx_radii['a'] / self.abx_radii['b'])))
-
-    def filtered_goldschmidt(self,
-                             minimum: float = 0.825,
-                             maximum: float = 1.059) -> bool:
-        """Determine if the Goldschmidt tolerance factor falls within the
-        specified range"""
-        return ((self.goldschmidt_tolerance > minimum) and
-                (self.goldschmidt_tolerance < maximum))
-
-    def filtered_bartel(self, maximum: float = 4.18) -> bool:
-        """Determine if the Bartel tolerance factor is lower than the specified
-        upper limit"""
-        return self.bartel_tolerance < maximum
-
-    @cached_property
     def total_charge(self) -> bool:
         """Calculate the total charge"""
         return sum([sum(oxidations) for oxidations in
@@ -1027,25 +967,6 @@ class PerovskiteTolerance(object):
     def charge_neutrality(self) -> bool:
         """Determine if the perovskite is charge neutral"""
         return self.total_charge == 0
-
-    @cached_property
-    def calibrated_bartel_classifier(self):
-        """Calibrated classifier to yield Bartel tolerance probabilities"""
-        return get_calibrated_bartel_classifier()
-
-    def bartel_probability(self,
-                           classifier: CalibratedClassifierCV = None):
-        """Calculate the probability that the estimate of`` the Bartel
-        tolerance is accurate
-
-        Parameters
-        ----------
-        classifier
-            calibrated classifier based on the Bartel tolerance
-        """
-        if classifier is None:
-            classifier = get_calibrated_bartel_classifier()
-        return classifier.predict_proba([[self.bartel_tolerance]])[0][1]
 
     def delta_charge_neutrality(
             self,
@@ -1231,14 +1152,6 @@ class SpinelTolerance(PerovskiteTolerance):
                 self.disallowed_oxidation_dict[pseudo] = \
                     self.disallowed_oxidation_dict[real]
 
-    def _expand_with_pseudos(self, element_list):
-        """Expand an element list to include any active pseudo-element variants."""
-        expanded = list(element_list)
-        for pseudo, real in self._pseudo_to_real.items():
-            if real in element_list and pseudo in self.elements:
-                expanded.append(pseudo)
-        return expanded
-
     @property
     def cation_plus_one(self):
         return []
@@ -1299,35 +1212,6 @@ class SpinelTolerance(PerovskiteTolerance):
         print(f'Spinel Tolerance: {tau}')
         return tau
     
-    @cached_property
-    def charge_inversion(self) -> float:
-        """Charge-based inversion degree for the spinel composition.
-
-        Convention: ox <= +2 is charge-native A, ox >= +3 is charge-native B.
-        An atom is inverted when its oxidation state does not match its site:
-        high-charge (>= +3) on A-site or low-charge (<= +2) on B-site.
-
-        Requires site_tags so that every element is assigned to exactly one
-        sublattice (via pseudo-elements for mixed-site species).
-
-        Returns the fraction of inverted cations in [0, 1].
-        """
-        inverted = 0
-        total = 0
-        for elem in self.a_elements:
-            for ox in self.oxidation_state[elem]:
-                total += 1
-                if ox >= 3:
-                    inverted += 1
-        for elem in self.b_elements:
-            for ox in self.oxidation_state[elem]:
-                total += 1
-                if ox <= 2:
-                    inverted += 1
-        if total == 0:
-            return 0.0
-        return inverted / total
-
     def entropy(self,
                     stirling: bool = True,
                     anion_vacancies: bool = True) -> float:
@@ -1479,326 +1363,6 @@ def read_shannon_radii(
     if write:
         with open(fjson, 'w') as f:
             json.dump(shannon_dict, f)
-
-
-def get_calibrated_bartel_classifier() -> CalibratedClassifierCV:
-    """Obtain a calibrated classifier to yield Bartel tolerance probabilities
-    """
-    dir_path = os.path.dirname(os.path.abspath(__file__))
-    f_clf = os.path.join(dir_path, 'data/save_clf.p')
-    if not os.path.exists(f_clf):
-
-        # read experimental data
-        df = pd.read_csv(os.path.join(dir_path, 'data/TableS1.csv'))
-        bartels = []
-        for _, row in df.iterrows():
-            structure = Atoms(row.ABX3)
-            perovskite_tolerance = PerovskiteTolerance(
-                structure,
-                possible_a_elements=[row.A],
-                possible_b_elements=[row.B],
-                possible_x_elements=[row.X])
-            bartels.append(perovskite_tolerance.bartel_tolerance)
-        df['tau'] = bartels
-
-        # calibrate classifier
-        X, y = df['tau'].values.reshape(-1, 1), df['exp_label'].values
-        clf = CalibratedClassifierCV(cv=3)
-        clf.fit(X, y)
-
-        # save classifier
-        pickle.dump(clf, open(f_clf, 'wb'))
-
-    else:
-
-        # read calibrated classifier from fil
-        clf = pickle.load(open(f_clf, 'rb'))
-
-    return clf
-
-
-def calculate_tolerances_wang2022(
-        atoms_row: Union[Atoms, AtomsRow]) -> Dict[str, float]:
-    """Calculate the Bartel and Goldschmidt tolerance factors, which can be
-    used to judge if a given perovskite structure can be synthesised or not,
-    using data from Wang et al (2022)
-
-    Parameters
-    ----------
-    atoms_row
-        ASE Atoms or AtomsRow object
-    """
-
-    # define A, B, and X symbols in ABX3
-    abx_symbols = {'a': ['Ca', 'K', 'Y', 'Ba', 'La', 'Sm', 'Sr'],
-                   'b': ['Co', 'Cu', 'Mn', 'Mg', 'Ni', 'Ti', 'Fe'],
-                   'x': ['O', 'XO']}
-
-    # check atoms/row
-    structure = _atoms_row_to_structure(atoms_row)
-    all_symbols = structure.get_chemical_symbols()
-    symbols = list(set(all_symbols))
-
-    sum_valences = {}
-    sum_radii = {}
-    counts = {}
-    abx_counts = {key: 0 for key in abx_symbols.keys()}
-    for symbol in symbols:
-
-        # count atoms
-        counts[symbol] = all_symbols.count(symbol)
-        for key in abx_symbols.keys():
-            if symbol in abx_symbols[key]:
-                abx_counts[key] += counts[symbol]
-
-        # find possible combinations of ionic valences
-        combos = list(combinations_with_replacement(
-            range(len(valences_Wang2022[symbol])), counts[symbol]))
-        sum_valences[symbol] = [sum([valences_Wang2022[symbol][i] for i in
-                                     combo]) for combo in combos]
-        sum_radii[symbol] = [sum([radii_Wang2022[symbol][i] for i in
-                                  combo]) for combo in combos]
-
-    # find combinations with lowest charge
-    combos = list(product(*[list(range(len(sum_valences[symbol])))
-                            for symbol in symbols]))
-    abs_charges = np.absolute(np.sum([[sum_valences[symbol][i] for symbol, i in
-                                       zip(symbols, combo)]
-                                      for combo in combos], axis=1))
-    min_combos = [combos[i] for i in
-                  np.where(abs_charges == min(abs_charges))[0]]
-
-    # find combination that gives lowest Goldschmidt and Bartel tolerances
-    goldschmidts = []
-    bartels = []
-    for combo in min_combos:
-        abx_radii = {key: sum([sum_radii[symbol][i] for symbol, i in
-                               zip(symbols, combo) if symbol in
-                               abx_symbols[key]]) / abx_counts[key] for key in
-                     abx_symbols.keys()}
-        abx_valences = {key: sum([sum_valences[symbol][i] for symbol, i in
-                                  zip(symbols, combo) if symbol in
-                                  abx_symbols[key]]) / abx_counts[key] for key
-                        in abx_symbols.keys()}
-        goldschmidts.append((abx_radii['a'] + abx_radii['x']) /
-                            (abx_radii['b'] + abx_radii['x']) / np.sqrt(2))
-        bartels.append(abx_radii['x'] / abx_radii['b'] - abx_valences['a'] *
-                       (abx_valences['a'] - abx_radii['a'] / abx_radii['b'] /
-                        np.log(abx_radii['a'] / abx_radii['b'])))
-    goldschmidts = np.asarray(goldschmidts)
-    return {
-        'goldschmidt': goldschmidts[
-            np.argmin(np.absolute(goldschmidts - 1.0))],
-        'bartel': min(bartels)}
-
-
-def calculate_goldschmidt_tolerance_wang2022(
-        atoms_row: Union[Atoms, AtomsRow]) -> float:
-    """Calculate the Goldschmidt tolerance factor, which can be used to judge
-    if a given perovskite structure can be synthesised or not, using data from
-    Wang et al (2022)
-
-    Parameters
-    ----------
-    atoms_row
-        ASE Atoms or AtomsRow object
-    """
-
-    return calculate_tolerances_wang2022(atoms_row)['goldschmidt']
-
-
-def calculate_bartel_tolerance_wang2022(
-        atoms_row: Union[Atoms, AtomsRow]) -> float:
-    """Calculate the Bartel tolerance factor, which can be used to judge if a
-    given perovskite structure can be synthesised or not, using data from Wang
-    et al (2022)
-
-    Parameters
-    ----------
-    atoms_row
-        ASE Atoms or AtomsRow object
-    """
-
-    return calculate_tolerances_wang2022(atoms_row)['bartel']
-
-
-def calculate_bartel_tolerance_analytical_wang2022(
-        atoms_row: Union[Atoms, AtomsRow],
-        deltas: List[float] = None) -> float:
-    """Calculate the Bartel tolerance factor for a perovskite of the type
-    Sr(x)A(1-x)Fe(y)B(1-y)O(3-delta), which can be used to judge if it can be
-    synthesised or not; adapted from Wang et al (2022)
-
-    Parameters
-    ----------
-    atoms_row
-        ASE Atoms or AtomsRow object
-    deltas
-        list of vacancy concentrations; the default is `[0]`
-    """
-
-    # check atoms/row
-    structure = _atoms_row_to_structure(atoms_row)
-
-    # check symbols
-    symbols = structure.get_chemical_symbols()
-    unique_symbols = set(symbols)
-    sr_replacements = ['Ca', 'K', 'Y', 'Ba', 'La', 'Sm']
-    fe_replacements = ['Co', 'Cu', 'Mn', 'Mg', 'Ni', 'Ti']
-    possible_symbols = set(['Sr', 'Fe', 'O'] + sr_replacements +
-                           fe_replacements)
-    if (len(unique_symbols) > 5 or not
-            unique_symbols.issubset(possible_symbols)):
-        raise Exception('The structure must have the form'
-                        ' Sr(x)A(1-x)Fe(y)B(1-y)O(3-delta)')
-    symbol_A = (list(unique_symbols.intersection(sr_replacements))[0] if
-                len(unique_symbols.intersection(sr_replacements)) > 0 else
-                None)
-    symbol_B = (list(unique_symbols.intersection(fe_replacements))[0] if
-                len(unique_symbols.intersection(fe_replacements)) > 0 else
-                None)
-
-    # properties related to Sr, Fe, O, and vacancies
-    rO = radii_Wang2022['O'][0]
-    rX = radii_Wang2022['XO'][0]
-    rSr = radii_Wang2022['Sr'][0]
-    nSr = valences_Wang2022['Sr'][0]
-    rFe_max = max(radii_Wang2022['Fe'])
-    rFe_min = min(radii_Wang2022['Fe'])
-    nFe_max = max(valences_Wang2022['Fe'])
-    nFe_min = min(valences_Wang2022['Fe'])
-
-    # average valence and radii of A and Sr
-    if symbol_A is not None:
-        x = symbols.count('Sr') / (symbols.count(symbol_A) +
-                                   symbols.count('Sr'))
-        nA = valences_Wang2022[symbol_A][0]
-        rA = radii_Wang2022[symbol_A][0]
-        nSrA = (nSr * x + nA * (1 - x))
-        rSrA = (rSr * x + rA * (1 - x))
-    else:
-        nSrA = nSr
-        rSrA = rSr
-
-    # constant related to radii of B
-    if symbol_B is not None:
-        y = symbols.count('Fe') / (symbols.count(symbol_B) +
-                                   symbols.count('Fe'))
-        nB_max = max(valences_Wang2022[symbol_B])
-        nB_min = min(valences_Wang2022[symbol_B])
-        rB_max = max(radii_Wang2022[symbol_B])
-        rB_min = min(radii_Wang2022[symbol_B])
-    else:
-        y = 1
-
-    if deltas is None:
-        deltas = [0]
-    taus = []
-    for delta in deltas:
-
-        # average radii of oxygen and vacancies
-        rOX = rO * (3 - delta) / 3 + rX * delta / 3
-
-        # function to minimize
-        def tau_fun(nB):
-
-            # average radius of B
-            if y < 1:
-                if nB_min == nB_max:
-                    rB = rB_min
-                else:
-                    P = (nB_max - nB) / (nB_max - nB_min)
-                    rB = P * rB_max + (1 - P) * rB_min
-
-            # average radius of Fe
-            if y > 0:
-                nFe = (6 - 2 * delta - nSrA) / y - nB * (1 - y) / y
-                rFe = (nFe_max - nFe) * rFe_max + (nFe - nFe_min) * rFe_min
-
-            # average radius of Fe and B
-            if y == 1:
-                rFeB = rFe
-            elif y == 0:
-                rFeB = rB
-            else:
-                rFeB = (rFe * y + rB * (1 - y))
-
-            # tolerance factor
-            rSrA_FeB = rSrA / rFeB
-            tau = rOX / rFeB - nSrA * (nSrA - rSrA_FeB / np.log(rSrA_FeB))
-
-            return tau
-
-        if y == 1:
-            tau = tau_fun(0)
-        else:
-            if nB_min == nB_max:
-                tau = tau_fun(nB_min)
-            else:
-                solution = minimize(
-                    tau_fun, x0=np.array((nB_max + nB_min) / 2),
-                    bounds=((nB_min, nB_max),))
-                if solution.success:
-                    tau = solution.fun
-                else:
-                    warnings.warn(f'Failed to calculate Bartel tolerance for'
-                                  f' {structure.get_chemical_formula()}'
-                                  f' through minimization, trying scanning'
-                                  f' approach')
-                    tau = min(tau_fun(np.linspace(nB_min, nB_max, 100000)))
-
-        taus.append(float(tau))
-
-    return min(taus)
-
-
-def check_charge_neutrality_wang2022(
-        atoms_row: Union[Atoms, AtomsRow],
-        min_delta: float = 0.0,
-        max_delta: float = 0.5) -> bool:
-    """Check charge neutrality is achievable for a perovskite of the type ABO3,
-     which determines if it is stable or not. Note that the only allowed
-    elements on the A and B sites are ['Ca', 'K', 'Y', 'Ba', 'La', 'Sm', 'Sr']
-    and ['Co', 'Cu', 'Mn', 'Mg', 'Ni', 'Ti', 'Fe'], respectively; adapted from
-    Wang et al (2022)
-
-    Parameters
-    ----------
-    atoms_row
-        ASE Atoms or AtomsRow object
-    min_delta
-        minimum vacancy concentration
-    max_delta
-        maximum vacancy concentration
-    """
-
-    # check atoms/row
-    structure = _atoms_row_to_structure(atoms_row)
-
-    # estimate atomic valences
-    nO = valences_Wang2022['O'][0]
-    ab_symbols = {'a': ['Ca', 'K', 'Y', 'Ba', 'La', 'Sm', 'Sr'],
-                  'b': ['Co', 'Cu', 'Mn', 'Mg', 'Ni', 'Ti', 'Fe']}
-    ab_valences = {'a': [], 'b': []}
-    for symbol in structure.get_chemical_symbols():
-        if symbol == 'O':
-            continue
-        valence = None
-        for key, symbols in ab_symbols.items():
-            if symbol in symbols:
-                valence = valences_Wang2022[symbol]
-                break
-        if valence is None:
-            raise Exception(f'The structure contains an element ({symbol})'
-                            f' with unknown valence')
-        ab_valences[key].append(valence)
-
-    # check charge neutrality
-    min_charge = sum([np.mean([min(val) for val in vals]) for vals in
-                      ab_valences.values()]) + nO * (3 - min_delta)
-    max_charge = sum([np.mean([max(val) for val in vals]) for vals in
-                      ab_valences.values()]) + nO * (3 - max_delta)
-    return (min_charge <= 0 and max_charge >= 0)
 
 
 # Exceptions that indicate a permanent problem with the request itself rather

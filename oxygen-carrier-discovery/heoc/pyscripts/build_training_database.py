@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+"""Create the initial dataset, <directory>/training.db.
+
+Draws 1,000 random spinel compositions with five to eight cations from the crystal
+space (create_crystal_space.py) and stores them with their stability factors,
+abundance, price and configurational entropy as cycle 0. The draw is not seeded, so
+a rerun gives a different set. The initial dataset of the article is in the Zenodo
+record.
+"""
 
 from ase.formula import non_metals
 from ase.units import kB
@@ -58,15 +66,14 @@ def estimate_configurational_entropies(cluster_space, atoms_row,
     configurational_entropy = estimate_configurational_entropy(
                 cluster_space=cluster_space, structure=structure)
 
-    # Changed here: return Sconf_R with factor 7 (for spinels) instead of 5 (for perovskites)
+    # Sconf_R per AB2O4 formula unit (7 atoms), in units of R
     return {'configurational_entropy': configurational_entropy,
             'Sconf_R': configurational_entropy / kB / len(structure) * 7}
 
 
 def get_stability_factors(atoms_row, directory='spinel', instance=False):
-    """Calculate various stability factors, including the Bartel and
-    Goldschmidt tolerance as well as the charge neutrality and configurational
-    entropy
+    """Calculate the spinel tolerance factor, the total charge, the charge
+    neutrality and the oxidation-state entropy
 
     Parameters
     ----------
@@ -75,18 +82,12 @@ def get_stability_factors(atoms_row, directory='spinel', instance=False):
     directory
         data directory
     instance
-        return instance of PerovskiteTolerance instead of dictionrary
+        return the SpinelTolerance instance instead of a dictionary
     """
-    if 'spinel' in directory:
-        st = SpinelTolerance(
-                atoms_row=atoms_row,
-                possible_a_elements=['Mg', 'Zn', 'Cu', 'Co', 'Ni', 'Ca', 'Li'],
-                possible_b_elements=['Al', 'Cr', 'Ga', 'Ti', 'Fe', 'Mn', 'Zr', 'V', 'Sn', 'In'],)
-        
-
-    else:
-        raise ValueError(f'The directory must be either "wang" or "inaki", not'
-                         f' {directory}')
+    st = SpinelTolerance(
+            atoms_row=atoms_row,
+            possible_a_elements=['Mg', 'Zn', 'Cu', 'Co', 'Ni', 'Ca', 'Li'],
+            possible_b_elements=['Al', 'Cr', 'Ga', 'Ti', 'Fe', 'Mn', 'Zr', 'V', 'Sn', 'In'],)
 
     if instance:
         return st
@@ -97,9 +98,8 @@ def get_stability_factors(atoms_row, directory='spinel', instance=False):
         'oxidation_state_entropy': st.entropy()}
 
 def build_training_database(directory='spinel'):
-    '''Create a database with training structures in the form of ABO3
-    perovskites with 80 atoms per supercells and up to six distinct metallic
-    elements
+    '''Create a database with 1,000 random spinel compositions in 84-atom
+    supercells with five to eight distinct cations
 
     Parameters
     ----------
@@ -107,11 +107,7 @@ def build_training_database(directory='spinel'):
         data directory
     '''
 
-    if 'spinel' in directory:
-        max_total = 8
-    else:
-        raise ValueError(f'The directory must be either "spinel", not'
-                         f' {directory}')
+    max_total = 8
 
     # read crystal space
     crystal_space = CrystalSpace.read(f'{directory}/crystal_space.spa')
@@ -162,9 +158,6 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    # Create a database with training structures in the form of ABO3
-    # perovskites with 80 atoms per supercells and up to six distinct metallic
-    # elements
     build_training_database(directory=args.directory)
 
     os.chdir(cwd)

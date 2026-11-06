@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+"""Create <directory>/prototypes.db with the cubic MgAl2O4 spinel from the Materials Project.
+
+Needs a Materials Project API key in PMG_MAPI_KEY.
+"""
 
 import argparse
 import os
@@ -9,9 +13,8 @@ sys.path.append(os.path.join(
 from metal.applications.crystals.tools import build_prototype_db
 
 
-def build_prototype_database(directory='wang'):
-    '''Create a database with prototype structures represented by the cubic and
-    orthorhombic form of the perovskite CaMnO3 and the brownmillerite Ca2Mn2O5
+def build_prototype_database(directory='spinel'):
+    '''Create a database with the cubic MgAl2O4 spinel as prototype structure
 
     Parameters
     ----------
@@ -22,7 +25,6 @@ def build_prototype_database(directory='wang'):
     # read api key, since pymatgen typically fails to do so
     api_key = SETTINGS['PMG_MAPI_KEY']
 
-    # create a database with cubic and orthorhombic CaMnO3 as well as Ca2Mn2O5
     build_prototype_db(
         filename=f'{directory}/prototypes.db',
         formulas=['MgAl2O4'],
@@ -41,14 +43,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--directory',
                         type=str,
-                        default='wang',
-                        choices=['wang', 'inaki'],
+                        default='spinel',
                         help='data directory')
     args = parser.parse_args()
 
-    # Create a database with prototype structures represented by the cubic and
-    # orthorhombic form of the perovskite CaMnO3 and the brownmillerite
-    # Ca2Mn2O5
     build_prototype_database(directory=args.directory)
 
     os.chdir(cwd)

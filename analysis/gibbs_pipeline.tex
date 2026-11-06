@@ -1,0 +1,36 @@
+\begin{table}[htbp]\centering\small
+\caption{Numerical settings of the Gibbs energy pipeline.}\label{tab:pipeline}
+\begin{tabularx}{\linewidth}{@{}lX@{}}\toprule
+Parameter & Value\\\midrule
+\multicolumn{2}{@{}l}{\textit{Supercell and SQS}}\\
+Primitive cell & 14-atom cubic spinel AB$_2$O$_4$\\
+Supercell & $(1,2,3)\to$ 84 atoms; 12 A, 24 B, 48 O\\
+SQS trials & 1 per composition per acquisition cycle\\
+icet cluster cutoffs (pair, triplet) & 6.0~\AA{}, 4.5~\AA{}\\
+icet Monte Carlo schedule & 3,000 steps with simulated annealing in temperature, the icet default for a single supercell\\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Relaxation (CHGNet)}}\\
+CHGNet version & 0.3.0, pre-trained on MPtrj (412,525 parameters)\\
+Optimizer & BFGS, with LBFGS and FIRE as fallbacks if a relaxation fails\\
+Force tolerance $f_{\max}$ & $10^{-3}$~eV/\AA{}, with $10^{-2}$~eV/\AA{} used only if all three optimizers fail\\
+Maximum steps & $10^{6}$\\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Phonons (Phonopy, CHGNet forces)}}\\
+Finite-displacement amplitude & 0.02~\AA{}\\
+Phonon supercell & relaxed SQS cell repeated along its shortest lattice vector until all lattice vectors are $\geq12.5$~\AA{}, which for cell lengths near 6, 12 and 18~\AA{} gives a $3\times2\times1$ repetition of 504 atoms for the 84-atom cell\\
+$q$-mesh for thermodynamic quantities & Monkhorst--Pack, automatic density of $10^{6}$ points\\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Oxygen chemical potential}}\\
+$\mu_{\mathrm O}(T,p_{\mathrm O_2})$ & $\mu_{\mathrm O}^{\mathrm{ref}}(T)+\tfrac12k_{\mathrm B}T\ln\rho_{\mathrm O_2}$, with $\rho_{\mathrm O_2}=p_{\mathrm O_2}/p^{\mathrm{ref}}$ and $p^{\mathrm{ref}}=1$~bar, reactor pressures in atm used without conversion\\
+$\mu_{\mathrm O}^{\mathrm{ref}}(T)$ & Reuter--Scheffler protocol with interpolated NIST--JANAF oxygen data\\
+Air-reactor conditions & $T=1223.15$~K, $p_{\mathrm O_2}=0.2$~atm\\
+Fuel-reactor conditions & $T=1323.15$~K, $p_{\mathrm O_2}=10^{-14}$~atm\\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Configurational entropy}}\\
+$S_{\mathrm{config}}$ & $-k_{\mathrm B}\sum_{s\in\{A,B,\mathrm O\}}\sum_j n_{s,j}\ln(n_{s,j}/N_s)$, with $(N_A,N_B,N_{\mathrm O})=(12,24,48)$; cation populations are resolved by element and oxidation state\\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Formation-energy reference}}\\
+Correction $E_{\mathrm{corr}}(v)$ & stored formation energy minus static energy, available for every evaluated structure\\
+Elemental references & Materials Project phase-diagram references. Neither the CHGNet entry nor elemental oxygen ($-4.948$~eV per atom) carries a compatibility correction\\
+\bottomrule\end{tabularx}
+\end{table}

@@ -17,7 +17,7 @@ Two sources are used:
    SQS, relaxation and phonon settings but without stored formation energies, so G(v)
    used E_corr = 0 and the DFT O2 reference in mu_O. Converting to the reference of the
    runs adds the exact linear term (E_O_MP - E_O_DFT) * v = +1.0127 eV * v, with
-   E_O_DFT = -5.960650525 eV (half of O2.json in the metal package of code.zip) and
+   E_O_DFT = -5.960650525 eV (half of O2.json in the metal package) and
    E_O_MP = -4.9479610 eV (Supplementary Section S3). The 20 structures at each vacancy
    count are independent, so they are combined into 20 curves in generation order.
 

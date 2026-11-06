@@ -4,7 +4,6 @@ import sys
 from datetime import datetime
 from glob import glob
 from pathlib import Path
-import threading
 
 # Third-party imports
 import torch
@@ -58,11 +57,9 @@ from al_util import (
     STAGE_SQS, STAGE_PHONON, STAGE_PHASE_STABILITY, STAGE_TRAINING_DB,
     STAGE_COMPARE_PREDICTIONS, log_wae_loss,
 )
-from al_viz import visualize_latent_space, plot_latent_evolution, analyze_latent_structure
 from build_sample_database import build_sample_database
 from build_sqs_databases import build_sqs_structures
 from perform_phonon_calculations import perform_phonon_calculations
-from slurm_phonon import submit_phonon_slurm_jobs
 from update_training_database import update_training_database
 from data_manager import DataManager
 
@@ -548,16 +545,6 @@ def main():
                     logger=logger
                 )
 
-                # Apply post-hoc calibration if requested
-                if config.ensemble_calibrate and ensemble_val_x is not None:
-                    logger.info('Applying post-hoc temperature calibration to ensemble...')
-                    from ensemble_mlp import calibrate_ensemble
-                    temperature = calibrate_ensemble(ensemble_model, ensemble_val_x, ensemble_val_y, logger)
-                    ensemble_model.temperature = temperature
-                    logger.info(f'Calibration temperature: {temperature:.4f}')
-                elif config.ensemble_calibrate:
-                    logger.warning('--ensemble-calibrate requires --use-validation, skipping calibration')
-
             # Train WAE (after regression models so latent space learns from their predictions)
             cycle_checkpoint = os.path.join(checkpoint_dir, f'checkpoint_cycle_{cycle}.pt')
             if os.path.exists(cycle_checkpoint):
@@ -572,28 +559,6 @@ def main():
 
                 save_checkpoint(wae_model, cycle, checkpoint_dir, optimizer=optimizer)
 
-            # --------------------Visualize latent space------------------------
-            property_values = dataset.x[:, 0]  # OTC values
-            viz_results = visualize_latent_space(
-                wae_model=wae_model,
-                dataset=dataset,
-                property_values=property_values,
-                cycle=cycle,
-                log_path=config.log_path,
-                property_name=config.method_list[0],
-                device=config.device,
-                logger=logger
-            )
-
-            # --------------------Analyze latent structure------------------------
-            analyze_latent_structure(
-                latent_reps=viz_results['latent_reps'],
-                property_values=viz_results['property_values'],
-                logger=logger,
-                cycle=cycle,
-                log_path=config.log_path
-            )
-
             # --------------------Generate samples-----------------------------
             sample_name = new_folder_name + f'/sample.csv'
             latents = get_latents(wae_model, dataset)
@@ -605,8 +570,9 @@ def main():
                 samples_ensemble(wae_model, ensemble_model, sample_name, latents, cycle,
                                 config.method_list, config, config.log_path, logger=logger, cycle=cycle,
                                 existing_df=data_manager.raw_df)
-            elif config.use_gp:
-                # GP mode
+            elif config.use_gp or config.use_ceiling:
+                # GP mode; the ceiling baseline reuses its pool with no GP
+                # (model_dict is None) and ranks in export_top_unique
                 samples_GP(wae_model, model_dict, sample_name, latents, cycle,
                            config.method_list, config, config.log_path, logger=logger, cycle=cycle,
                            existing_df=data_manager.raw_df)
@@ -650,15 +616,10 @@ def main():
 
         if not should_skip_stage(STAGE_PHONON, progress_state):
             logger.info('Performing phonon calculations (this may take a while)...')
-            if config.phonon_slurm_jobs > 0:
-                # Fan out phonon calculations across multiple SLURM GPU jobs
-                submit_phonon_slurm_jobs(config, cycle, logger)
-            else:
-                # Run locally on current node (threaded relaxations run inside if configured)
-                perform_phonon_calculations(
-                    processes=1, directory=f'{config.method}', use_gpus=config.use_gpu,
-                    logging=logger, batch_size=config.phonon_batch_size,
-                    n_relax_threads=config.relax_threads or 0)
+            perform_phonon_calculations(
+                processes=1, directory=f'{config.method}', use_gpus=config.use_gpu,
+                logging=logger, batch_size=config.phonon_batch_size,
+                n_relax_threads=config.relax_threads or 0)
             logger.info('Phonon calculations complete!')
             save_progress_state(config.log_path, cycle, STAGE_PHONON)
         else:
@@ -714,9 +675,6 @@ def main():
         logger.info(f'Cycle {cycle} complete!')
         progress_state = None  # Reset progress for new cycle
 
-    # ---------------------------Create evolution plot---------------------
-    logger.info('Creating latent space evolution plot...')
-    plot_latent_evolution(log_path=config.log_path, property_name=config.method_list[0], logger=logger)
     logger.info('Active learning pipeline complete!')
 
 
