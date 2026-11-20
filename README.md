@@ -1,5 +1,7 @@
 # Active learning of spinel oxygen carriers
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21283967.svg)](https://doi.org/10.5281/zenodo.21283967)
+
 Code for "Prediction targets and surrogate models for active learning of spinel oxygen carriers" by Alfred Juhlin Onbeck, Ivana Staničić, Radhey Shyam Yadav, Tobias Mattisson and Anders Hellman (Chalmers University of Technology).
 
 Ten active learning strategies, each run five times, search high-entropy spinel oxides for a high oxygen transfer capacity (OTC) in chemical looping. A strategy pairs a surrogate model (deep ensemble, Gaussian process or Monte Carlo dropout) with a prediction target (OTC, OTC clipped at the composition's ceiling, the 16 Gibbs energies of the two reactors, or the air-reactor Gibbs energy with the vacancy count as an input). Each candidate is evaluated with special quasirandom structures (SQS) at 0 to 7 oxygen vacancies, relaxed with CHGNet, with vibrational free energies from Phonopy.
